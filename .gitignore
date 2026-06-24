@@ -43,6 +43,7 @@ example
 /android
 
 # md files
+CLAUDE.md
 claude.md
 AppPlan.md
 Agents.md
