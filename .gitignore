@@ -41,3 +41,9 @@ example
 # generated native folders
 /ios
 /android
+
+# md files
+claude.md
+AppPlan.md
+Agents.md
+PHASE-SPEC.md

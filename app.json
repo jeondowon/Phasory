@@ -1,14 +1,14 @@
 {
   "expo": {
-    "name": "_scaffold",
-    "slug": "_scaffold",
+    "name": "PHASE",
+    "slug": "phase",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "scaffold",
-    "userInterfaceStyle": "automatic",
+    "scheme": "phase",
+    "userInterfaceStyle": "light",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "bundleIdentifier": "com.jeondowon.phase"
     },
     "android": {
       "adaptiveIcon": {
@@ -28,11 +28,17 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
+          "backgroundColor": "#FAFAF8",
           "android": {
             "image": "./assets/images/splash-icon.png",
             "imageWidth": 76
           }
+        }
+      ],
+      [
+        "react-native-audio-api",
+        {
+          "iosMicrophonePermission": "소리를 녹음하려면 마이크 접근 권한이 필요합니다."
         }
       ]
     ],
