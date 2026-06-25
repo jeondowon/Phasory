@@ -1,5 +1,6 @@
 // Screen 05 — Ambient (Phase Orbit). The signature screen. PHASE-SPEC §7.
-import { View, StyleSheet } from 'react-native';
+import { useEffect, useState } from 'react';
+import { View, StyleSheet, TouchableOpacity } from 'react-native';
 import { Screen } from '@/components/Screen';
 import { AppText } from '@/components/AppText';
 import { Slider } from '@/components/Slider';
@@ -7,6 +8,7 @@ import { PhaseOrbit } from '@/components/PhaseOrbit';
 import { useStore } from '@/store';
 import type { GenerativePreset } from '@/store/types';
 import { leverLabel } from '@/store/levers';
+import * as transport from '@/audio/transport';
 import { colors } from '@/theme/colors';
 import { glow } from '@/theme/glow';
 
@@ -20,6 +22,29 @@ const LEVER_LABELS: { key: keyof GenerativePreset; label: string }[] = [
 export default function AmbientScreen() {
   const preset = useStore((s) => s.preset);
   const setLever = useStore((s) => s.setLever);
+  const pads = useStore((s) => s.pads);
+  const sounds = useStore((s) => s.sounds);
+  const master = useStore((s) => s.master);
+  const [playing, setPlaying] = useState(false);
+
+  // 스토어(패드/사운드/마스터/레버)가 바뀔 때마다 트랜스포트에 라이브 반영. 재생 중 슬라이더
+  // 조작도 즉시 들린다(wet은 바로, 간격/밀도는 다음 틱).
+  useEffect(() => {
+    transport.setParams({ pads, sounds, master, preset });
+  }, [pads, sounds, master, preset]);
+
+  // 화면을 떠나면 generative 재생을 멈춘다.
+  useEffect(() => () => transport.stop(), []);
+
+  const toggle = async () => {
+    if (playing) {
+      transport.stop();
+      setPlaying(false);
+    } else {
+      await transport.start();
+      setPlaying(true);
+    }
+  };
 
   return (
     <Screen>
@@ -31,7 +56,7 @@ export default function AmbientScreen() {
 
       {/* Orbit */}
       <View style={styles.orbit}>
-        <PhaseOrbit />
+        <PhaseOrbit playing={playing} tempoPct={preset.tempo.pct} pads={pads} />
       </View>
 
       {/* 4 levers */}
@@ -55,10 +80,16 @@ export default function AmbientScreen() {
       {/* Transport */}
       <View style={styles.transport}>
         <View style={styles.spacer} />
-        <View style={[styles.play, glow(26, 0.3)]}>
-          <View style={styles.pauseBar} />
-          <View style={styles.pauseBar} />
-        </View>
+        <TouchableOpacity style={[styles.play, glow(26, 0.3)]} onPress={toggle} activeOpacity={0.85}>
+          {playing ? (
+            <>
+              <View style={styles.pauseBar} />
+              <View style={styles.pauseBar} />
+            </>
+          ) : (
+            <View style={styles.playTriangle} />
+          )}
+        </TouchableOpacity>
         <View style={styles.rec}>
           <View style={styles.recDot} />
           <AppText style={styles.recLabel}>REC</AppText>
@@ -104,6 +135,17 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   pauseBar: { width: 6, height: 26, borderRadius: 2, backgroundColor: colors.accentDark },
+  playTriangle: {
+    width: 0,
+    height: 0,
+    borderTopWidth: 13,
+    borderBottomWidth: 13,
+    borderLeftWidth: 22,
+    borderTopColor: 'transparent',
+    borderBottomColor: 'transparent',
+    borderLeftColor: colors.accentDark,
+    marginLeft: 6,
+  },
   rec: {
     width: 54,
     height: 54,

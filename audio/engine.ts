@@ -43,6 +43,23 @@ async function load(soundId: string): Promise<AudioBuffer | null> {
   return buf;
 }
 
+// 제너레이티브 트랜스포트가 공유하는 컨텍스트 접근자. UI 일회성 재생과 같은 싱글톤을 쓴다.
+export function getContext(): AudioContext {
+  return context();
+}
+
+// Sound 하나를 디코드해 캐시(빌트인=에셋, userRecorded=uri). 트랜스포트 스케줄러가 사용.
+export async function loadSound(sound: Sound): Promise<AudioBuffer | null> {
+  if (sound.source === 'userRecorded' && sound.uri) {
+    const cached = buffers.get(sound.uri);
+    if (cached) return cached;
+    const buf = await context().decodeAudioData(sound.uri);
+    buffers.set(sound.uri, buf);
+    return buf;
+  }
+  return load(sound.id);
+}
+
 // 패드 탭 → 일회성 재생. volume 0..100 → gain 0..1 (0이면 무음).
 export async function playPad(soundId: string, volume: number): Promise<void> {
   await ensureAudioSession();
