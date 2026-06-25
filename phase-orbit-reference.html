@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>PHASE ORBIT — reference logic only</title>
+<style>
+  body{background:#0b0c0e;color:#878d95;font-family:ui-monospace,Menlo,Consolas,monospace;
+    padding:24px;}
+  h1{color:#e8e6e1;font-size:14px;letter-spacing:.2em;text-transform:uppercase;margin:0 0 6px;}
+  p{font-size:12px;line-height:1.6;max-width:560px;}
+  canvas{display:block;background:#101216;border-radius:12px;margin-top:18px;}
+  button{font-family:inherit;background:#141619;color:#e8e6e1;border:1px solid #24272c;
+    padding:8px 14px;border-radius:8px;cursor:pointer;margin-right:8px;margin-top:14px;}
+  button:hover{border-color:#878d95;}
+  code{color:#d9a45b;}
+</style>
+</head>
+<body>
+<h1>PHASE ORBIT — reference only</h1>
+<p>
+  원본 데모(phase-ambient-sampler.html)에서 phase orbit 시각화 로직만 추출한 참고 파일입니다.
+  신스 합성 코드는 전부 제거했고, 실제 오디오 transport 대신 가짜 시계(<code>fakeSeconds</code>)로
+  같은 동작을 재현합니다. RN 포팅 시 핵심은: (1) 레이어마다 다른 회전 주기(<code>beats</code>),
+  (2) 같은 링을 도는 각도 계산, (3) 트리거 시점의 glow 페이드.
+</p>
+<canvas id="scope" width="480" height="480"></canvas>
+<button id="toggle">시작 / 정지</button>
+<button id="fireVocal">vocal 트리거</button>
+<button id="fireSax">sax 트리거</button>
+<button id="fireTb303">tb303 트리거</button>
+<button id="fireHat">hat 트리거</button>
+
+<script>
+"use strict";
+
+/* =========================================================================
+   핵심 데이터 구조 — 레이어(=재생 중인 패드)마다 회전 주기(beats)가 다름.
+   beats가 다르므로 시간이 지나면 점들이 서로 위상이 어긋나며(phasing) 돈다.
+   color는 역할 구분용(harmonic=amber, perc=bone 등 — 디자인 토큰에 맞춰 교체).
+   ========================================================================= */
+const LAYERS = {
+  vocal: { beats: 1.5,  fire: 0, color: "#d9a45b" }, // harmonic
+  sax:   { beats: 2.5,  fire: 0, color: "#d9a45b" }, // harmonic
+  tb303: { beats: 0.75, fire: 0, color: "#d9a45b" }, // harmonic
+  hat:   { beats: 0.5,  fire: 0, color: "#cfcabd" }, // percussive
+};
+
+/* =========================================================================
+   가짜 transport — 실제 앱에서는 오디오 엔진의 currentTime을 그대로 써야 함.
+   (기획서 6번 "phase orbit이 오디오와 어긋나지 않으려면 시간 기준을 RN 쪽에
+   노출하는 작업을 포팅 1순위 요구사항으로 둘 것" 참고)
+   ========================================================================= */
+let running = false;
+let bpm = 64;
+let fakeSeconds = 0;
+let lastTick = performance.now();
+
+function tick(now) {
+  if (running) {
+    const dt = (now - lastTick) / 1000;
+    fakeSeconds += dt;
+  }
+  lastTick = now;
+}
+
+/* 패드를 누르면(또는 generative 엔진이 자동으로 트리거하면) 호출.
+   glow 페이드의 시작 시점만 기록한다 — 오비트는 "방금 울렸다"는 걸 이걸로 표현. */
+function fire(id) {
+  if (LAYERS[id]) LAYERS[id].fire = performance.now();
+}
+
+/* =========================================================================
+   draw() — 매 프레임 호출되는 렌더링 로직 (원본과 동일한 핵심 부분)
+   ========================================================================= */
+const cv = document.getElementById("scope");
+const cx = cv.getContext("2d");
+
+function draw() {
+  const now = performance.now();
+  tick(now);
+  requestAnimationFrame(draw);
+
+  const W = cv.width, H = cv.height, cxp = W / 2, cyp = H / 2;
+  cx.clearRect(0, 0, W, H);
+
+  const spb = 60 / bpm;            // 1 beat의 길이(초)
+  const tSec = running ? fakeSeconds : 0;
+  const ids = Object.keys(LAYERS);
+
+  ids.forEach((id, i) => {
+    const L = LAYERS[id];
+
+    // 레이어마다 다른 반지름의 링에 배치 (안쪽부터 바깥쪽 순서)
+    const R = 60 + i * (Math.min(W, H) / 2 - 80) / ids.length;
+
+    // 링 자체(가이드라인)
+    cx.beginPath();
+    cx.arc(cxp, cyp, R, 0, Math.PI * 2);
+    cx.strokeStyle = "rgba(255,255,255,0.08)";
+    cx.lineWidth = 1;
+    cx.stroke();
+
+    // --- 핵심: 위상(phase) 계산 ---
+    // period = 이 레이어가 한 바퀴 도는 데 걸리는 시간(초).
+    // beats가 레이어마다 다르므로 period도 다르고, 그래서 시간이 지날수록
+    // 점들이 서로 다른 위치에서 만나며 절대 같은 패턴으로 반복되지 않음(phasing).
+    const period = L.beats * spb;
+    const ang = period > 0
+      ? ((tSec % period) / period) * Math.PI * 2 - Math.PI / 2
+      : -Math.PI / 2;
+    const x = cxp + Math.cos(ang) * R;
+    const y = cyp + Math.sin(ang) * R;
+
+    // 트리거된 직후일수록 강하게, 시간이 지나면 페이드아웃(glow)
+    const since = (now - L.fire) / 1000;
+    const glow = Math.max(0, 1 - since * 2.2);
+
+    cx.beginPath();
+    cx.arc(x, y, 6 + glow * 7, 0, Math.PI * 2);
+    cx.fillStyle = L.color;
+    cx.globalAlpha = 0.55 + glow * 0.45;
+    cx.fill();
+    cx.globalAlpha = 1;
+
+    if (glow > 0) {
+      cx.beginPath();
+      cx.arc(x, y, 6 + glow * 7, 0, Math.PI * 2);
+      cx.strokeStyle = L.color;
+      cx.globalAlpha = glow * 0.5;
+      cx.lineWidth = 2;
+      cx.stroke();
+      cx.globalAlpha = 1;
+    }
+  });
+
+  // 중심점 — 재생 중일 때만 밝게
+  cx.beginPath();
+  cx.arc(cxp, cyp, 3.5, 0, Math.PI * 2);
+  cx.fillStyle = running ? "#e8e6e1" : "#3a3e44";
+  cx.fill();
+}
+draw();
+
+/* ---------- 데모용 버튼 연결 ---------- */
+document.getElementById("toggle").addEventListener("click", () => {
+  running = !running;
+  lastTick = performance.now();
+});
+document.getElementById("fireVocal").addEventListener("click", () => fire("vocal"));
+document.getElementById("fireSax").addEventListener("click", () => fire("sax"));
+document.getElementById("fireTb303").addEventListener("click", () => fire("tb303"));
+document.getElementById("fireHat").addEventListener("click", () => fire("hat"));
+</script>
+</body>
+</html>
