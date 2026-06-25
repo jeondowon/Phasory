@@ -41,6 +41,9 @@ type RecordingInput = {
   title: string;
   memo: string;
   createdAt: number;
+  location?: { lat: number; lng: number; label: string };
+  photoUri?: string;
+  peaks?: number[]; // 트림 구간의 파형 막대(%). 지도 핀 썸네일용
 };
 
 type State = {
@@ -56,7 +59,10 @@ type State = {
   saveRecording: (rec: RecordingInput) => void;
   clearPad: (key: string) => void; // 패드만 비움(사운드는 라이브러리에 남음)
   deleteSound: (id: string) => void; // 사운드 영구 삭제 + 쓰던 패드 비움
-  updateSound: (id: string, patch: Partial<Pick<Sound, 'name' | 'memo' | 'createdAt'>>) => void;
+  updateSound: (
+    id: string,
+    patch: Partial<Pick<Sound, 'name' | 'memo' | 'createdAt' | 'location' | 'photoUri'>>
+  ) => void;
 };
 
 export const useStore = create<State>()(
@@ -75,7 +81,7 @@ export const useStore = create<State>()(
         set((s) => ({ preset: { ...s.preset, [lever]: { ...s.preset[lever], pct } } })),
       // 녹음 결과를 Sound로 만든다. 빈 패드가 있으면 거기 자동 배치해 샘플러에서 바로 연주
       // 가능하게 한다. 트림 구간만 재생하도록 offset/clip을 박아 둔다. persist로 디스크에 남는다.
-      saveRecording: ({ uri, durationMs, sel, title, memo, createdAt }) => {
+      saveRecording: ({ uri, durationMs, sel, title, memo, createdAt, location, photoUri, peaks }) => {
         const { sounds, pads } = get();
         const id = `rec-${createdAt}`;
         const total = durationMs / 1000;
@@ -89,6 +95,9 @@ export const useStore = create<State>()(
           clipSec: (sel.e - sel.s) * total,
           memo: memo.trim(),
           createdAt,
+          location,
+          photoUri,
+          peaks,
         };
         const emptyIdx = pads.findIndex((p) => p.soundId === null);
         const nextPads =

@@ -8,7 +8,8 @@ import {
   TouchableOpacity,
   Pressable,
   TextInput,
-  Keyboard,
+  ScrollView,
+  Image,
   Alert,
   type LayoutChangeEvent,
 } from 'react-native';
@@ -29,11 +30,13 @@ import { ensureMicPermission, startRecording, stopRecording, currentDuration, ge
 import { playUri } from '@/audio/engine';
 import { useStore } from '@/store';
 import { colors } from '@/theme/colors';
+import { DateStepperBox } from '@/components/DateStepperBox';
+import { getCurrentLocation, resolveLocation, type GeoFix } from '@/lib/geo';
+import { pickPhoto } from '@/lib/photo';
 
 const N = 64; // 파형 막대 수
 const MIN_GAP = 0.04; // 트림 핸들 최소 간격(전체 길이 대비 비율)
 const FLAT = Array(N).fill(8) as number[]; // idle 평탄 베이스라인
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 type Phase = 'idle' | 'recording' | 'recorded' | 'memo';
 
@@ -41,12 +44,6 @@ type Phase = 'idle' | 'recording' | 'recorded' | 'memo';
 function fmt(ms: number): string {
   const total = Math.floor(ms / 1000);
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
-}
-
-// ms epoch → "Apr 12, 2026 · 9:41" (Intl 의존 회피).
-function fmtDate(ms: number): string {
-  const d = new Date(ms);
-  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} · ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 // 전체 파형 막대에서 트림 선택 구간만 잘라냄(메모 카드에는 트림된 소리를 표시).
@@ -105,15 +102,6 @@ function Handle({ left }: { left: number }) {
   );
 }
 
-function ClockGlyph() {
-  return (
-    <View style={styles.clock}>
-      <View style={styles.clockHandV} />
-      <View style={styles.clockHandH} />
-    </View>
-  );
-}
-
 export default function RecordScreen() {
   const router = useRouter();
   const saveRecording = useStore((s) => s.saveRecording);
@@ -126,6 +114,10 @@ export default function RecordScreen() {
   const [title, setTitle] = useState('');
   const [memo, setMemo] = useState('');
   const [createdAt, setCreatedAt] = useState<number | null>(null); // memo 진입 시각 = 캡처 시각
+  const [loc, setLoc] = useState<GeoFix | null>(null); // GPS 자동기록 위치(라벨 포함)
+  const [locLabel, setLocLabel] = useState(''); // 편집 가능한 위치 라벨
+  const [locating, setLocating] = useState(false);
+  const [photoUri, setPhotoUri] = useState<string | null>(null);
   const selRef = useRef(sel);
   selRef.current = sel;
   const boxW = useRef(0); // 파형 박스 폭(px) — 제스처 좌표 변환용
@@ -185,16 +177,39 @@ export default function RecordScreen() {
   };
 
   // ✓ — 녹음/트림을 마치고 같은 페이지를 메모 단계로 전환. uri 없으면 무시(비활성).
+  // 메모 진입과 동시에 현재 위치를 비동기로 채운다(권한 거부·실패해도 저장은 막지 않음).
   const confirm = () => {
     if (!uri) return;
     setCreatedAt((c) => c ?? Date.now());
     setPhase('memo');
+    if (!loc && !locating) {
+      setLocating(true);
+      getCurrentLocation()
+        .then((g) => {
+          if (g) {
+            setLoc(g);
+            setLocLabel(g.label);
+          }
+        })
+        .finally(() => setLocating(false));
+    }
   };
 
-  // SAVE — 입력한 제목/설명으로 Sound 영속화(빈 패드 배치)하고 닫기.
-  const save = () => {
+  // SAVE — 제목 필수. 라벨 텍스트로 최종 위치를 확정(바뀌었으면 지오코딩)하고 영속화.
+  const save = async () => {
     if (!uri || createdAt == null) return;
-    saveRecording({ uri, durationMs: elapsedMs, sel, title, memo, createdAt });
+    const location = await resolveLocation(locLabel, loc ?? undefined);
+    saveRecording({
+      uri,
+      durationMs: elapsedMs,
+      sel,
+      title,
+      memo,
+      createdAt,
+      location,
+      photoUri: photoUri ?? undefined,
+      peaks: sliceSel(peaks, sel),
+    });
     router.back();
   };
 
@@ -222,6 +237,7 @@ export default function RecordScreen() {
   // ── 메모 단계 ──────────────────────────────────────────────
   if (phase === 'memo') {
     const memoBars = sliceSel(peaks, sel);
+    const canSave = title.trim().length > 0; // 제목만 필수 — 비면 SAVE 비활성
     return (
       <Screen>
         <View style={styles.header}>
@@ -232,7 +248,12 @@ export default function RecordScreen() {
           <View style={styles.headerSpacer} />
         </View>
 
-        <Pressable style={styles.content} onPress={Keyboard.dismiss} accessible={false}>
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+        >
           {/* waveform card */}
           <View style={styles.waveCard}>
             <TouchableOpacity style={styles.playBtn} onPress={preview} activeOpacity={0.7}>
@@ -242,7 +263,7 @@ export default function RecordScreen() {
             <AppText style={styles.duration}>{fmt(trimmedSec * 1000)}</AppText>
           </View>
 
-          {/* title */}
+          {/* title (필수) */}
           <View>
             <AppText style={styles.fieldLabel}>TITLE</AppText>
             <TextInput
@@ -270,27 +291,53 @@ export default function RecordScreen() {
             />
           </View>
 
-          {/* meta */}
-          <View style={styles.meta}>
-            <View style={styles.dateRow}>
-              <View style={styles.dateLeft}>
-                <ClockGlyph />
-                <AppText style={styles.dateText}>{createdAt != null ? fmtDate(createdAt) : ''}</AppText>
-              </View>
-            </View>
-            <View style={styles.locRow}>
-              <View style={styles.pin} />
-              <AppText style={styles.locText}>Kyoto · Gion</AppText>
-            </View>
+          {/* date (자동, 수정 가능) */}
+          <View>
+            <AppText style={styles.fieldLabel}>DATE</AppText>
+            {createdAt != null && <DateStepperBox dateMs={createdAt} onChange={setCreatedAt} />}
           </View>
-        </Pressable>
+
+          {/* location (자동, 라벨 수정 가능) */}
+          <View>
+            <AppText style={styles.fieldLabel}>LOCATION</AppText>
+            <TextInput
+              style={[styles.titleField, styles.fieldText]}
+              value={locLabel}
+              onChangeText={setLocLabel}
+              placeholder={locating ? 'Locating…' : 'Add a place'}
+              placeholderTextColor={colors.textFainter}
+              selectionColor={colors.accent}
+            />
+          </View>
+
+          {/* photo (선택) */}
+          <View>
+            <AppText style={styles.fieldLabel}>PHOTO</AppText>
+            {photoUri ? (
+              <TouchableOpacity style={styles.photoBox} onPress={() => pickPhoto(setPhotoUri)} activeOpacity={0.85}>
+                <Image source={{ uri: photoUri }} style={styles.photo} />
+                <View style={styles.photoChange}>
+                  <AppText style={styles.photoChangeText}>CHANGE</AppText>
+                </View>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity style={styles.photoSlot} onPress={() => pickPhoto(setPhotoUri)} activeOpacity={0.7}>
+                <AppText style={styles.photoSlotText}>+ ADD PHOTO</AppText>
+              </TouchableOpacity>
+            )}
+          </View>
+        </ScrollView>
 
         {/* Buttons */}
         <View style={styles.memoButtons}>
           <TouchableOpacity style={styles.cancelBtn} onPress={() => router.back()}>
             <AppText style={styles.cancelLabel}>CANCEL</AppText>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.saveBtn} onPress={save}>
+          <TouchableOpacity
+            style={[styles.saveBtn, !canSave && styles.disabled]}
+            onPress={save}
+            disabled={!canSave}
+          >
             <AppText style={styles.saveLabel}>SAVE SOUND</AppText>
           </TouchableOpacity>
         </View>
@@ -484,7 +531,8 @@ const styles = StyleSheet.create({
     transform: [{ rotate: '-45deg' }],
   },
   // ── memo 단계 ──
-  content: { flex: 1, paddingHorizontal: 24, paddingTop: 22, gap: 16 },
+  scroll: { flex: 1 },
+  content: { paddingHorizontal: 24, paddingTop: 22, paddingBottom: 16, gap: 16 },
   waveCard: {
     borderWidth: 1,
     borderColor: colors.hairline,
@@ -536,33 +584,34 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceRecessed,
   },
   fieldText: { fontSize: 13, lineHeight: 22, color: colors.textField },
-  meta: { gap: 13 },
-  dateRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  photoSlot: {
     borderWidth: 1,
-    borderColor: colors.hairlineField,
-    borderRadius: 10,
-    paddingVertical: 11,
-    paddingHorizontal: 13,
+    borderColor: colors.hairlineDash,
+    borderStyle: 'dashed',
+    borderRadius: 13,
+    height: 64,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surfaceRecessed,
   },
-  dateLeft: { flexDirection: 'row', alignItems: 'center', gap: 9 },
-  clock: { width: 13, height: 13, borderRadius: 6.5, borderWidth: 1, borderColor: colors.textFaint },
-  clockHandV: { position: 'absolute', left: 5.5, top: 3, width: 1, height: 4, backgroundColor: colors.textFaint },
-  clockHandH: { position: 'absolute', left: 5.5, top: 5.5, width: 3, height: 1, backgroundColor: colors.textFaint },
-  dateText: { fontSize: 12, color: colors.text },
-  locRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-  pin: {
-    width: 7,
-    height: 7,
-    backgroundColor: colors.slate,
-    borderTopLeftRadius: 4,
-    borderTopRightRadius: 4,
-    borderBottomLeftRadius: 4,
-    borderBottomRightRadius: 0,
-    transform: [{ rotate: '45deg' }],
+  photoSlotText: { fontSize: 11, letterSpacing: 1.5, color: colors.textFaint },
+  photoBox: {
+    borderRadius: 13,
+    overflow: 'hidden',
+    height: 180,
+    backgroundColor: colors.surfaceRecessed,
   },
-  locText: { fontSize: 12, color: colors.textMuted },
+  photo: { width: '100%', height: '100%' },
+  photoChange: {
+    position: 'absolute',
+    right: 10,
+    bottom: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  photoChangeText: { fontSize: 10, letterSpacing: 1.5, color: '#fff' },
   memoButtons: { flexDirection: 'row', gap: 12, paddingHorizontal: 24, paddingTop: 18, paddingBottom: 40 },
   cancelBtn: {
     flex: 1,

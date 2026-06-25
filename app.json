@@ -40,6 +40,19 @@
         {
           "iosMicrophonePermission": "소리를 녹음하려면 마이크 접근 권한이 필요합니다."
         }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "소리를 녹음한 위치를 기록해 소리 지도에 표시하기 위해 위치 접근 권한이 필요합니다."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "기록에 사진을 첨부하기 위해 사진 접근 권한이 필요합니다.",
+          "cameraPermission": "기록에 사진을 촬영해 첨부하기 위해 카메라 접근 권한이 필요합니다."
+        }
       ]
     ],
     "experiments": {

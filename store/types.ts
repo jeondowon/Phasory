@@ -13,6 +13,10 @@ export type Sound = {
   clipSec?: number; // 재생 길이(트림 구간)
   memo?: string; // "이 소리는 무엇인가" 메모
   createdAt?: number; // ms epoch
+  // 기록(P4). 위치의 단일 소스는 label, lat/lng는 label에서 파생(지도 핀 좌표).
+  location?: { lat: number; lng: number; label: string };
+  photoUri?: string; // 첨부 사진(갤러리/촬영)
+  peaks?: number[]; // 파형 썸네일용 막대 높이(%). 사진 없는 핀에 사용
 };
 
 export type Pad = {

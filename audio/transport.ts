@@ -92,19 +92,14 @@ function makeSoftClipCurve(): Float32Array {
   return curve;
 }
 
-// 경량 피드백 리버브 — naive 실시간 컨볼루션(2.6초 IR)이 렌더 스레드를 과부하시켜 출력 전체가
-// 언더런(배속/지직)을 내던 P3 핵심버그의 근본 원인이었다. 병렬 콤 필터(딜레이+감쇠 피드백)는
-// 꼬리 길이와 무관하게 CPU가 O(1)이라 안전하다. SPACE는 기존처럼 wet 양(wetGain)만 조절한다.
-// time은 서로 소수적 간격(메탈릭 공진 방지), fb<1 + 피드백 루프 lowpass라 항상 안정 감쇠.
-const REVERB_COMBS = [
-  { time: 0.0297, fb: 0.8 },
-  { time: 0.0371, fb: 0.78 },
-  { time: 0.0411, fb: 0.77 },
-  { time: 0.0437, fb: 0.76 },
-];
-const REVERB_DAMP_HZ = 3200; // 피드백 루프 고역 감쇠 → 어둡고 자연스러운 꼬리
+// 멀티탭 딜레이(FIR) 리버브 — 피드백 콤은 이 빌드에서 자가발진해 렌더를 폭주시켰다(SPACE=0에도
+// 전체 무음, SPACE↑면 "틱틱"). 멀티탭은 피드백 루프가 없어 발진이 수학적으로 불가능하다.
+// 탭마다 딜레이+lowpass+지수감쇠로 공간 꼬리를 만든다. CPU는 탭 수에 비례(8개라 가볍다).
+const REVERB_TAPS = [0.013, 0.027, 0.041, 0.059, 0.079, 0.101, 0.127, 0.157]; // 탭 지연(초)
+const REVERB_DECAY = 0.72; // 탭별 지수 감쇠(뒤 탭일수록 작게)
+const REVERB_DAMP_HZ = 2600; // 탭 고역 감쇠 → 어두운 꼬리
 const REVERB_SEND = 0.5; // 리버브 입력 게인
-const REVERB_NORM = 0.28; // 콤 합 정규화(리미터 전 클리핑 방지)
+const REVERB_NORM = 0.6; // 탭 합 정규화(피드백 없어 게인 여유 큼)
 
 // input(masterGain) → [병렬 콤 필터] → output(wetGain). 컨텍스트당 한 번만 구성.
 function buildReverb(c: AudioContext, input: GainNode, output: GainNode): void {
@@ -113,22 +108,20 @@ function buildReverb(c: AudioContext, input: GainNode, output: GainNode): void {
   const sum = c.createGain();
   sum.gain.value = REVERB_NORM;
   input.connect(send);
-  for (const { time, fb } of REVERB_COMBS) {
+  REVERB_TAPS.forEach((t, i) => {
     const delay = c.createDelay(1);
-    delay.delayTime.value = time;
+    delay.delayTime.value = t;
     const damp = c.createBiquadFilter();
     damp.type = 'lowpass';
     damp.frequency.value = REVERB_DAMP_HZ;
-    const fbGain = c.createGain();
-    fbGain.gain.value = fb;
-    // send → delay → damp →(sum 출력)
-    //                 damp → fbGain → delay (피드백 루프)
+    const g = c.createGain();
+    g.gain.value = Math.pow(REVERB_DECAY, i + 1);
+    // send → delay → damp → g → sum (피드백 없음 = 발진 불가)
     send.connect(delay);
     delay.connect(damp);
-    damp.connect(sum);
-    damp.connect(fbGain);
-    fbGain.connect(delay);
-  }
+    damp.connect(g);
+    g.connect(sum);
+  });
   sum.connect(output);
 }
 
@@ -150,7 +143,10 @@ function buildBus(c: AudioContext): void {
   dryGain.connect(limiter);
   wetGain.connect(limiter);
   limiter.connect(c.destination);
-  buildReverb(c, masterGain, wetGain);
+  // SPACE 리버브 비활성 — audio-api 0.11.0에서 리버브 노드(delay/biquad)를 그래프에 추가하면
+  // 발진이 아니라 렌더 자체가 깨진다(피드백 없는 멀티탭도 동일, 빼면 정상). 버전 고정(0.12.x
+  // 빌드 실패)이라 라이브러리 레벨 우회가 막혀, 리버브는 별도 과제로 두고 비활성한다.
+  // buildReverb(c, masterGain, wetGain);
 
   busCtx = c;
 }

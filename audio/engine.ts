@@ -2,8 +2,26 @@
 // 디코드 캐시 + playPad. 사운드는 신스 합성이 아니라 파일 재생(AppPlan §5.7):
 // require()한 wav 에셋의 metro 모듈 id(number)를 decodeAudioData가 그대로 받는다.
 import { AudioContext, type AudioBuffer } from 'react-native-audio-api';
+import { Paths } from 'expo-file-system';
 import type { Sound } from '../store/types';
 import { ensureAudioSession } from './session';
+
+// 저장된 녹음 uri는 앱 컨테이너 UUID를 포함한 절대경로라, 재설치/업데이트로 UUID가
+// 바뀌면 그 경로가 죽어 decodeAudioData가 "Failed to decode"로 실패한다. 파일명만 떼어
+// 현재 Document 디렉토리로 재조합하면 UUID가 바뀌어도(파일이 남아있는 한) 항상 찾는다.
+function localUri(uri: string): string {
+  // 녹음 경로는 Documents/AudioAPI/... 하위에 저장되고, 컨테이너 UUID는 재설치 시 바뀐다.
+  // "/Documents/" 이후 상대경로 전체를 보존해 현재 Document 디렉토리로 재조합한다.
+  const marker = '/Documents/';
+  const idx = uri.indexOf(marker);
+  if (idx < 0) return uri;
+  const rel = uri.substring(idx + marker.length); // 예: "AudioAPI/recording__....m4a"
+  const docUri = Paths.document.uri; // file:///.../Documents/
+  const withScheme = (docUri.endsWith('/') ? docUri : docUri + '/') + rel;
+  // decode는 원본 스킴 규칙을 따른다(원본이 스킴 없으면 스킴 없이 줘야 디코드됨).
+  // decode는 원본 스킴 규칙을 따른다(원본이 스킴 없으면 스킴 없이 줘야 디코드됨).
+  return uri.startsWith('file://') ? withScheme : withScheme.replace(/^file:\/\//, '');
+}
 
 const ASSETS: Record<string, number> = {
   rain: require('../assets/builtin-sounds/rain.wav'),
@@ -51,10 +69,11 @@ export function getContext(): AudioContext {
 // Sound 하나를 디코드해 캐시(빌트인=에셋, userRecorded=uri). 트랜스포트 스케줄러가 사용.
 export async function loadSound(sound: Sound): Promise<AudioBuffer | null> {
   if (sound.source === 'userRecorded' && sound.uri) {
-    const cached = buffers.get(sound.uri);
+    const path = localUri(sound.uri);
+    const cached = buffers.get(path);
     if (cached) return cached;
-    const buf = await context().decodeAudioData(sound.uri);
-    buffers.set(sound.uri, buf);
+    const buf = await context().decodeAudioData(path);
+    buffers.set(path, buf);
     return buf;
   }
   return load(sound.id);
@@ -101,10 +120,11 @@ export async function playUri(
   await ensureAudioSession();
   const c = context();
   if (c.state === 'suspended') await c.resume();
-  let buf = buffers.get(uri);
+  const path = localUri(uri);
+  let buf = buffers.get(path);
   if (!buf) {
-    buf = await c.decodeAudioData(uri);
-    buffers.set(uri, buf);
+    buf = await c.decodeAudioData(path);
+    buffers.set(path, buf);
   }
   const src = c.createBufferSource();
   src.buffer = buf;

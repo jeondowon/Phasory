@@ -1,31 +1,15 @@
-// Screen — Edit a Memory. 패드 케밥(⋮) → "Edit memory"로 진입. 날짜·제목·설명 수정.
-// 날짜는 의존성 없는 커스텀 스텝퍼(년/월/일)로 조정한다(시:분은 보존).
+// Screen — Edit a Memory. 패드 케밥(⋮) 또는 지도 상세에서 진입. 제목·설명·날짜·위치·사진 수정.
+// 위치는 라벨이 단일 소스 — 라벨을 바꾸면 저장 시 forward-geocode로 지도 핀 좌표가 따라간다.
 import { useEffect, useState } from 'react';
-import { View, StyleSheet, TouchableOpacity, TextInput, Pressable, Keyboard } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, TextInput, ScrollView, Image } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Screen } from '@/components/Screen';
 import { AppText } from '@/components/AppText';
+import { DateStepperBox } from '@/components/DateStepperBox';
 import { useStore } from '@/store';
 import { colors } from '@/theme/colors';
-
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-// 한 줄 스텝퍼 — 값 + ‹ › (delta=-1/+1).
-function Stepper({ value, onStep }: { value: string; onStep: (delta: number) => void }) {
-  return (
-    <View style={styles.stepRow}>
-      <AppText style={styles.stepValue}>{value}</AppText>
-      <View style={styles.stepBtns}>
-        <TouchableOpacity style={styles.stepBtn} onPress={() => onStep(-1)} hitSlop={8}>
-          <AppText style={styles.stepChevron}>‹</AppText>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.stepBtn} onPress={() => onStep(1)} hitSlop={8}>
-          <AppText style={styles.stepChevron}>›</AppText>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-}
+import { resolveLocation } from '@/lib/geo';
+import { pickPhoto } from '@/lib/photo';
 
 export default function EditMemoryScreen() {
   const router = useRouter();
@@ -37,6 +21,8 @@ export default function EditMemoryScreen() {
   const [title, setTitle] = useState(sound?.name ?? '');
   const [memo, setMemo] = useState(sound?.memo ?? '');
   const [dateMs, setDateMs] = useState(sound?.createdAt ?? Date.now());
+  const [locLabel, setLocLabel] = useState(sound?.location?.label ?? '');
+  const [photoUri, setPhotoUri] = useState<string | null>(sound?.photoUri ?? null);
 
   // 사운드가 사라졌으면(삭제 등) 머무를 이유 없음.
   useEffect(() => {
@@ -44,18 +30,18 @@ export default function EditMemoryScreen() {
   }, [sound]);
   if (!sound) return null;
 
-  // JS Date 산술이 월/일 wrap·carry를 자동 처리(시:분은 유지).
-  const d = new Date(dateMs);
-  const bump = (field: 'y' | 'm' | 'd', delta: number) => {
-    const nd = new Date(dateMs);
-    if (field === 'y') nd.setFullYear(nd.getFullYear() + delta);
-    else if (field === 'm') nd.setMonth(nd.getMonth() + delta);
-    else nd.setDate(nd.getDate() + delta);
-    setDateMs(nd.getTime());
-  };
+  const canSave = title.trim().length > 0;
 
-  const save = () => {
-    updateSound(id, { name: title.trim() || 'Untitled', memo: memo.trim(), createdAt: dateMs });
+  // 라벨이 바뀌었으면 지오코딩으로 핀 좌표를 갱신(resolveLocation이 처리).
+  const save = async () => {
+    const location = await resolveLocation(locLabel, sound.location);
+    updateSound(id, {
+      name: title.trim() || 'Untitled',
+      memo: memo.trim(),
+      createdAt: dateMs,
+      location,
+      photoUri: photoUri ?? undefined,
+    });
     router.back();
   };
 
@@ -69,7 +55,12 @@ export default function EditMemoryScreen() {
         <View style={styles.headerSpacer} />
       </View>
 
-      <Pressable style={styles.content} onPress={Keyboard.dismiss} accessible={false}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+      >
         {/* title */}
         <View>
           <AppText style={styles.fieldLabel}>TITLE</AppText>
@@ -101,22 +92,50 @@ export default function EditMemoryScreen() {
         {/* date */}
         <View>
           <AppText style={styles.fieldLabel}>DATE</AppText>
-          <View style={styles.dateBox}>
-            <Stepper value={String(d.getFullYear())} onStep={(delta) => bump('y', delta)} />
-            <View style={styles.stepDivider} />
-            <Stepper value={MONTHS[d.getMonth()]} onStep={(delta) => bump('m', delta)} />
-            <View style={styles.stepDivider} />
-            <Stepper value={String(d.getDate())} onStep={(delta) => bump('d', delta)} />
-          </View>
+          <DateStepperBox dateMs={dateMs} onChange={setDateMs} />
         </View>
-      </Pressable>
+
+        {/* location */}
+        <View>
+          <AppText style={styles.fieldLabel}>LOCATION</AppText>
+          <TextInput
+            style={[styles.titleField, styles.fieldText]}
+            value={locLabel}
+            onChangeText={setLocLabel}
+            placeholder="Add a place"
+            placeholderTextColor={colors.textFainter}
+            selectionColor={colors.accent}
+          />
+        </View>
+
+        {/* photo */}
+        <View>
+          <AppText style={styles.fieldLabel}>PHOTO</AppText>
+          {photoUri ? (
+            <TouchableOpacity style={styles.photoBox} onPress={() => pickPhoto(setPhotoUri)} activeOpacity={0.85}>
+              <Image source={{ uri: photoUri }} style={styles.photo} />
+              <View style={styles.photoChange}>
+                <AppText style={styles.photoChangeText}>CHANGE</AppText>
+              </View>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity style={styles.photoSlot} onPress={() => pickPhoto(setPhotoUri)} activeOpacity={0.7}>
+              <AppText style={styles.photoSlotText}>+ ADD PHOTO</AppText>
+            </TouchableOpacity>
+          )}
+        </View>
+      </ScrollView>
 
       {/* Buttons */}
       <View style={styles.buttons}>
         <TouchableOpacity style={styles.cancelBtn} onPress={() => router.back()}>
           <AppText style={styles.cancelLabel}>CANCEL</AppText>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.saveBtn} onPress={save}>
+        <TouchableOpacity
+          style={[styles.saveBtn, !canSave && styles.disabled]}
+          onPress={save}
+          disabled={!canSave}
+        >
           <AppText style={styles.saveLabel}>SAVE</AppText>
         </TouchableOpacity>
       </View>
@@ -135,7 +154,8 @@ const styles = StyleSheet.create({
   close: { fontSize: 18, color: colors.textFaint },
   headerSpacer: { width: 12 },
   title: { fontSize: 13, letterSpacing: 3, color: colors.text },
-  content: { flex: 1, paddingHorizontal: 24, paddingTop: 22, gap: 18 },
+  scroll: { flex: 1 },
+  content: { paddingHorizontal: 24, paddingTop: 22, paddingBottom: 16, gap: 16 },
   fieldLabel: { fontSize: 10, letterSpacing: 1.5, color: colors.textFaint, marginBottom: 9 },
   titleField: {
     borderWidth: 1,
@@ -154,33 +174,34 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceRecessed,
   },
   fieldText: { fontSize: 13, lineHeight: 22, color: colors.textField },
-  // date stepper
-  dateBox: {
+  photoSlot: {
     borderWidth: 1,
-    borderColor: colors.hairlineField,
+    borderColor: colors.hairlineDash,
+    borderStyle: 'dashed',
     borderRadius: 13,
-    backgroundColor: colors.surfaceRecessed,
-    paddingHorizontal: 15,
-  },
-  stepRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 12,
-  },
-  stepValue: { fontSize: 14, color: colors.textField },
-  stepBtns: { flexDirection: 'row', gap: 6 },
-  stepBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 9,
-    borderWidth: 1,
-    borderColor: colors.hairlineBtn,
+    height: 64,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: colors.surfaceRecessed,
   },
-  stepChevron: { fontSize: 16, color: colors.textMuted },
-  stepDivider: { height: 1, backgroundColor: colors.hairline },
+  photoSlotText: { fontSize: 11, letterSpacing: 1.5, color: colors.textFaint },
+  photoBox: {
+    borderRadius: 13,
+    overflow: 'hidden',
+    height: 180,
+    backgroundColor: colors.surfaceRecessed,
+  },
+  photo: { width: '100%', height: '100%' },
+  photoChange: {
+    position: 'absolute',
+    right: 10,
+    bottom: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  photoChangeText: { fontSize: 10, letterSpacing: 1.5, color: '#fff' },
   // buttons
   buttons: { flexDirection: 'row', gap: 12, paddingHorizontal: 24, paddingTop: 18, paddingBottom: 40 },
   cancelBtn: {
@@ -202,4 +223,5 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   saveLabel: { fontSize: 13, letterSpacing: 2, color: colors.accentDark },
+  disabled: { opacity: 0.4 },
 });

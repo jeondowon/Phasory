@@ -46,6 +46,7 @@ export default function RootLayout() {
           <Stack.Screen name="(tabs)" />
           <Stack.Screen name="record" options={{ presentation: 'modal' }} />
           <Stack.Screen name="edit" options={{ presentation: 'modal' }} />
+          <Stack.Screen name="sound/[id]" options={{ presentation: 'modal' }} />
         </Stack>
       </SafeAreaProvider>
     </GestureHandlerRootView>
