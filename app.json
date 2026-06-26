@@ -53,7 +53,8 @@
           "photosPermission": "기록에 사진을 첨부하기 위해 사진 접근 권한이 필요합니다.",
           "cameraPermission": "기록에 사진을 촬영해 첨부하기 위해 카메라 접근 권한이 필요합니다."
         }
-      ]
+      ],
+      "@maplibre/maplibre-react-native"
     ],
     "experiments": {
       "typedRoutes": true,

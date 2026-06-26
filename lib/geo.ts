@@ -39,6 +39,18 @@ export async function getCurrentLocation(): Promise<GeoFix | null> {
   }
 }
 
+// 지도 초기 카메라용 — 현재 위치 좌표만 빠르게(라벨/reverse-geocode 없이). 권한 거부·실패 시 null.
+export async function getCurrentCoords(): Promise<GeoPoint | null> {
+  try {
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status !== 'granted') return null;
+    const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+    return { lat: pos.coords.latitude, lng: pos.coords.longitude };
+  } catch {
+    return null;
+  }
+}
+
 // 라벨 텍스트 → 좌표. EDIT에서 라벨이 바뀌었을 때 핀을 옮기는 데 쓴다.
 // "City · District" 형태의 가운뎃점은 지오코더가 못 읽으므로 콤마로 바꿔 질의한다.
 export async function geocodeLabel(label: string): Promise<GeoPoint | null> {

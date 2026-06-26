@@ -1,61 +1,40 @@
-// Screen 04 — Sound Map. 위치가 기록된 사운드를 핀으로 표시(클러스터링 없음). PHASE-SPEC §6.
-// MapLibre 전이라 배경은 스타일라이즈드 SVG(SoundMapCanvas), 핀 좌표는 lat/lng를 프레임에
-// bbox 정규화한 임시 배치다(P4-b에서 실제 지도 마커로 교체). 핀 탭 → 소리 상세.
-import { useMemo } from 'react';
-import { View, StyleSheet, TouchableOpacity, Image } from 'react-native';
+// Screen 04 — Sound Map. 위치가 기록된 사운드를 실제 지도(MapLibre) 위에 핀으로 표시
+// (클러스터링 없음, PHASE-SPEC §6). 라이트 톤(OpenFreeMap positron) 위에 PHASE 색 핀.
+// 진입 시 현재 위치를 기준으로 카메라를 잡고(UserLocation 점도 표시), 핀 탭 → 소리 상세.
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { View, StyleSheet, Image, TouchableOpacity } from 'react-native';
+import Svg, { Circle, Line } from 'react-native-svg';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import {
+  Map,
+  Camera,
+  Marker,
+  UserLocation,
+  type CameraRef,
+  type InitialViewState,
+  type LngLatBounds,
+} from '@maplibre/maplibre-react-native';
 import { StatusBarMock } from '@/components/StatusBarMock';
 import { AppText } from '@/components/AppText';
-import { SoundMapCanvas } from '@/components/SoundMapCanvas';
-import { playUri } from '@/audio/engine';
+import { getCurrentCoords } from '@/lib/geo';
 import { useStore } from '@/store';
 import type { Sound } from '@/store/types';
 import { colors } from '@/theme/colors';
-import { glow } from '@/theme/glow';
 
-const FRAME_W = 372;
-const FRAME_H = 826;
-// 핀이 상단 헤더·하단 카드와 겹치지 않게 두는 여백(372×826 프레임 기준).
-const PAD_X = 54;
-const PAD_TOP = 150;
-const PAD_BOTTOM = 170;
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// 키 불필요한 무료 벡터 타일 + 라이트 스타일(positron). PHASE 톤(#FAFAF8 계열)과 잘 맞는다.
+const MAP_STYLE = 'https://tiles.openfreemap.org/styles/positron';
+const DEFAULT_CENTER: [number, number] = [126.978, 37.5665]; // 위치도 핀도 없을 때 기본(서울)
+const ENTRY_ZOOM = 9; // 진입/기본 카메라 — 광역. 소리가 멀리 흩어져 있어도 한눈에 개괄한다.
+const PIN_ZOOM = 15; // 핀(썸네일)을 탭했을 때 줌인하는 레벨
 
-function shortDate(ms?: number): string {
-  if (ms == null) return '';
-  const d = new Date(ms);
-  return `${MONTHS[d.getMonth()]} ${d.getDate()}`;
-}
-
-// peaks(0..100%)를 핀/카드용 미니 막대 5개(4..16px)로 다운샘플. 없으면 기본 모양.
+// peaks(0..100%)를 핀용 미니 막대 5개(4..16px)로 다운샘플. 없으면 기본 모양.
 function miniBars(peaks?: number[]): number[] {
   if (!peaks || peaks.length === 0) return [8, 14, 6, 12, 9];
   const n = 5;
   return Array.from({ length: n }, (_, i) => {
     const v = peaks[Math.floor((i / n) * peaks.length)] ?? 0;
     return Math.max(4, Math.min(16, (v / 100) * 16));
-  });
-}
-
-// 위치 있는 사운드들의 lat/lng를 프레임 좌표(372×826)로 bbox 정규화. 동→오른쪽, 북→위.
-function project(located: Sound[]): { left: number; top: number }[] {
-  const lats = located.map((s) => s.location!.lat);
-  const lngs = located.map((s) => s.location!.lng);
-  const minLat = Math.min(...lats);
-  const maxLat = Math.max(...lats);
-  const minLng = Math.min(...lngs);
-  const maxLng = Math.max(...lngs);
-  const spanLat = maxLat - minLat || 1;
-  const spanLng = maxLng - minLng || 1;
-  const single = located.length === 1;
-  return located.map((s) => {
-    const fx = single ? 0.5 : (s.location!.lng - minLng) / spanLng;
-    const fy = single ? 0.5 : (maxLat - s.location!.lat) / spanLat;
-    return {
-      left: PAD_X + fx * (FRAME_W - PAD_X * 2),
-      top: PAD_TOP + fy * (FRAME_H - PAD_TOP - PAD_BOTTOM),
-    };
   });
 }
 
@@ -70,41 +49,34 @@ function Thumb({ sound }: { sound: Sound }) {
   );
 }
 
-function Pin({
-  sound,
-  left,
-  top,
-  selected,
-  onPress,
-}: {
-  sound: Sound;
-  left: number;
-  top: number;
-  selected: boolean;
-  onPress: () => void;
-}) {
-  const ringColor = selected ? colors.accent : colors.slate;
-  const size = selected ? 50 : 44;
+// 현재 위치로 이동 버튼의 조준(crosshair) 아이콘.
+function Crosshair({ color }: { color: string }) {
+  return (
+    <Svg width={22} height={22} viewBox="0 0 24 24">
+      <Circle cx={12} cy={12} r={7} stroke={color} strokeWidth={1.6} fill="none" />
+      <Circle cx={12} cy={12} r={2.4} fill={color} />
+      <Line x1={12} y1={1.5} x2={12} y2={5} stroke={color} strokeWidth={1.6} strokeLinecap="round" />
+      <Line x1={12} y1={19} x2={12} y2={22.5} stroke={color} strokeWidth={1.6} strokeLinecap="round" />
+      <Line x1={1.5} y1={12} x2={5} y2={12} stroke={color} strokeWidth={1.6} strokeLinecap="round" />
+      <Line x1={19} y1={12} x2={22.5} y2={12} stroke={color} strokeWidth={1.6} strokeLinecap="round" />
+    </Svg>
+  );
+}
+
+// 마커 비주얼만(좌표 배치는 Marker가 한다). 꼬리가 아래를 향하므로 anchor='bottom'으로 꼬리
+// 끝이 좌표를 가리키게 한다.
+function PinVisual({ sound }: { sound: Sound }) {
+  const size = 44;
   const inner = size - 4;
   return (
-    <TouchableOpacity
-      activeOpacity={0.8}
-      onPress={onPress}
-      style={[styles.pin, { left: `${(left / FRAME_W) * 100}%`, top: `${(top / FRAME_H) * 100}%` }]}
-    >
-      <View
-        style={[
-          styles.pinCircle,
-          { width: size, height: size, borderRadius: size / 2, borderColor: ringColor },
-          selected && glow(18, 0.4),
-        ]}
-      >
+    <View style={styles.pin}>
+      <View style={[styles.pinCircle, { width: size, height: size, borderRadius: size / 2 }]}>
         <View style={{ width: inner, height: inner, borderRadius: inner / 2, overflow: 'hidden' }}>
           <Thumb sound={sound} />
         </View>
       </View>
-      <View style={[styles.tail, { borderTopColor: ringColor }]} />
-    </TouchableOpacity>
+      <View style={styles.tail} />
+    </View>
   );
 }
 
@@ -112,37 +84,83 @@ export default function MapScreen() {
   const router = useRouter();
   const sounds = useStore((s) => s.sounds);
 
-  // 위치가 있는 사운드만 핀으로. featured = 가장 최근 것(하단 카드·선택 글로우).
-  const { located, positions, featured } = useMemo(() => {
-    const list = Object.values(sounds).filter((s) => s.location);
-    const pos = list.length ? project(list) : [];
-    const feat = list.reduce<Sound | null>(
-      (best, s) => (best && (best.createdAt ?? 0) >= (s.createdAt ?? 0) ? best : s),
-      null
-    );
-    return { located: list, positions: pos, featured: feat };
-  }, [sounds]);
+  // 현재 위치 좌표. ready=조회 완료(성공/거부 무관) → 이때 Map을 렌더해 초기 카메라를 확정한다
+  // (initialViewState는 마운트 1회만 반영되므로, 위치를 안 뒤에 Map을 올려야 그 위치로 잡힌다).
+  const [here, setHere] = useState<[number, number] | null>(null);
+  const [ready, setReady] = useState(false);
+  const cameraRef = useRef<CameraRef>(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const c = await getCurrentCoords();
+      if (!alive) return;
+      if (c) setHere([c.lng, c.lat]);
+      setReady(true);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // 위치가 있는 사운드만 핀으로.
+  const located = useMemo(() => Object.values(sounds).filter((s) => s.location), [sounds]);
+
+  // 초기 카메라: 현재 위치가 있으면 그곳을 우선. 없으면 핀들을 담거나(2+), 단일 핀/기본 위치.
+  const initial: InitialViewState = useMemo(() => {
+    if (here) return { center: here, zoom: ENTRY_ZOOM };
+    if (located.length >= 2) {
+      const lngs = located.map((s) => s.location!.lng);
+      const lats = located.map((s) => s.location!.lat);
+      const bounds: LngLatBounds = [Math.min(...lngs), Math.min(...lats), Math.max(...lngs), Math.max(...lats)];
+      return { bounds, padding: { top: 150, bottom: 120, left: 60, right: 60 } };
+    }
+    if (located.length === 1) {
+      const l = located[0].location!;
+      return { center: [l.lng, l.lat], zoom: ENTRY_ZOOM };
+    }
+    return { center: DEFAULT_CENTER, zoom: ENTRY_ZOOM };
+  }, [here, located]);
 
   const openDetail = (id: string) => router.push({ pathname: '/sound/[id]', params: { id } });
-  const play = (s: Sound) => {
-    if (s.uri) playUri(s.uri, 100, s.offsetSec ?? 0, s.clipSec).catch(() => {});
+
+  // 핀 탭 → 그 위치로 줌인하면서 상세 화면을 연다(돌아오면 줌인된 채로 남는다).
+  const openSound = (s: Sound) => {
+    cameraRef.current?.flyTo({
+      center: [s.location!.lng, s.location!.lat],
+      zoom: PIN_ZOOM,
+      duration: 500,
+    });
+    openDetail(s.id);
+  };
+
+  // 현재 위치로 카메라 이동(최신 좌표를 다시 받아 부드럽게). 줌은 보던 그대로 유지. 거부·실패 시 무시.
+  const recenter = async () => {
+    const c = await getCurrentCoords();
+    if (!c) return;
+    const center: [number, number] = [c.lng, c.lat];
+    setHere(center);
+    cameraRef.current?.flyTo({ center, duration: 700 });
   };
 
   return (
     <View style={styles.root}>
-      <SoundMapCanvas />
-
-      {/* pins */}
-      {located.map((s, i) => (
-        <Pin
-          key={s.id}
-          sound={s}
-          left={positions[i].left}
-          top={positions[i].top}
-          selected={featured?.id === s.id}
-          onPress={() => openDetail(s.id)}
-        />
-      ))}
+      {ready && (
+        <Map style={StyleSheet.absoluteFill} mapStyle={MAP_STYLE} logo={false} compass={false}>
+          <Camera ref={cameraRef} initialViewState={initial} />
+          <UserLocation animated />
+          {located.map((s) => (
+            <Marker
+              key={s.id}
+              id={s.id}
+              lngLat={[s.location!.lng, s.location!.lat]}
+              anchor="bottom"
+              onPress={() => openSound(s)}
+            >
+              <PinVisual sound={s} />
+            </Marker>
+          ))}
+        </Map>
+      )}
 
       {/* chrome */}
       <SafeAreaView edges={['top']}>
@@ -154,27 +172,16 @@ export default function MapScreen() {
       </SafeAreaView>
 
       {/* empty state */}
-      {located.length === 0 && (
+      {ready && located.length === 0 && (
         <View style={styles.empty} pointerEvents="none">
           <AppText style={styles.emptyText}>녹음한 소리에 위치를 더하면 여기에 표시됩니다</AppText>
         </View>
       )}
 
-      {/* featured-sound card */}
-      {featured && (
-        <TouchableOpacity style={styles.card} activeOpacity={0.9} onPress={() => openDetail(featured.id)}>
-          <View style={styles.cardThumb}>
-            <Thumb sound={featured} />
-          </View>
-          <View style={styles.cardText}>
-            <AppText style={styles.cardTitle} numberOfLines={1}>{featured.name}</AppText>
-            <AppText style={styles.cardMeta} numberOfLines={1}>
-              {[featured.location?.label, shortDate(featured.createdAt)].filter(Boolean).join('  ·  ')}
-            </AppText>
-          </View>
-          <TouchableOpacity style={styles.cardPlay} onPress={() => play(featured)}>
-            <View style={styles.cardPlayTriangle} />
-          </TouchableOpacity>
+      {/* 현재 위치로 이동 */}
+      {ready && (
+        <TouchableOpacity style={styles.locateBtn} onPress={recenter} activeOpacity={0.85}>
+          <Crosshair color={colors.slate} />
         </TouchableOpacity>
       )}
     </View>
@@ -195,10 +202,25 @@ const styles = StyleSheet.create({
   // empty
   empty: { position: 'absolute', left: 40, right: 40, top: '46%', alignItems: 'center' },
   emptyText: { fontSize: 12, lineHeight: 20, color: colors.textFaint, textAlign: 'center' },
+  // 현재 위치로 이동 버튼 (우하단, 헤어라인 보더·드롭섀도 지양)
+  locateBtn: {
+    position: 'absolute',
+    right: 20,
+    bottom: 44,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(250,250,248,0.96)',
+    borderWidth: 1,
+    borderColor: colors.hairlineField,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   // pins
-  pin: { position: 'absolute', alignItems: 'center' },
+  pin: { alignItems: 'center' },
   pinCircle: {
     borderWidth: 2,
+    borderColor: colors.slate,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.pinWaveBg,
@@ -218,53 +240,8 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4,
     borderRightWidth: 4,
     borderTopWidth: 5,
+    borderTopColor: colors.slate,
     borderLeftColor: 'transparent',
     borderRightColor: 'transparent',
-  },
-  // card
-  card: {
-    position: 'absolute',
-    left: 24,
-    right: 24,
-    bottom: 36,
-    backgroundColor: 'rgba(240,240,238,0.96)',
-    borderWidth: 1,
-    borderColor: colors.hairlineField,
-    borderRadius: 15,
-    paddingVertical: 15,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-  },
-  cardThumb: {
-    width: 46,
-    height: 46,
-    borderRadius: 11,
-    borderWidth: 1,
-    borderColor: colors.accentBorder,
-    overflow: 'hidden',
-  },
-  cardText: { flex: 1 },
-  cardTitle: { fontSize: 14, color: colors.text },
-  cardMeta: { fontSize: 11, letterSpacing: 0.5, color: colors.textFaint, marginTop: 5 },
-  cardPlay: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: colors.accent,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cardPlayTriangle: {
-    width: 0,
-    height: 0,
-    marginLeft: 3,
-    borderTopWidth: 6,
-    borderBottomWidth: 6,
-    borderLeftWidth: 10,
-    borderTopColor: 'transparent',
-    borderBottomColor: 'transparent',
-    borderLeftColor: colors.accentDark,
   },
 });
