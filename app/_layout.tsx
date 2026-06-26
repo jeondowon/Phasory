@@ -1,5 +1,7 @@
 // Root layout: load JetBrains Mono, then a Stack with the tabs + the
-// record/edit modal flow. We hide the OS status bar (each screen draws its own).
+// record/edit modal flow. We show the real OS status bar with dark content
+// (the warm-white background is light); iOS lays it out around the device's
+// notch / Dynamic Island automatically.
 import { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -36,7 +38,7 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <StatusBar hidden />
+        <StatusBar style="dark" />
         <Stack
           screenOptions={{
             headerShown: false,

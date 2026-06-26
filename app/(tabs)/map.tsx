@@ -15,7 +15,6 @@ import {
   type InitialViewState,
   type LngLatBounds,
 } from '@maplibre/maplibre-react-native';
-import { StatusBarMock } from '@/components/StatusBarMock';
 import { AppText } from '@/components/AppText';
 import { getCurrentCoords } from '@/lib/geo';
 import { useStore } from '@/store';
@@ -164,7 +163,6 @@ export default function MapScreen() {
 
       {/* chrome */}
       <SafeAreaView edges={['top']}>
-        <StatusBarMock />
         <View style={styles.header}>
           <AppText style={styles.title}>SOUND MAP</AppText>
           <AppText style={styles.count}>{located.length} SOUNDS</AppText>
