@@ -5,15 +5,16 @@
 //
 // 레버 매핑(SCALE은 현재 라벨 전용이라 출력 미연결):
 //   TEMPO   → 틱 간격(BPM)            DENSITY → 틱당 패드 발화 확률(동시 보이스 수)
-//   SPACE   → 리버브 wet 양(경량 피드백 딜레이 리버브)
+//   SPACE   → 메아리(탭) 개수로 잔향: DRY=0 ROOM=1 HALL=2 CATHEDRAL=3 (보이스 복제 방식)
 import {
   AudioContext,
   type AudioBuffer,
+  type AudioNode,
   type GainNode,
   type WaveShaperNode,
 } from 'react-native-audio-api';
 import type { Sound, Pad, GenerativePreset } from '../store/types';
-import { TEMPO_MIN_BPM, TEMPO_MAX_BPM } from '../store/levers';
+import { TEMPO_MIN_BPM, TEMPO_MAX_BPM, SPACE_WORDS } from '../store/levers';
 import { ensureAudioSession } from './session';
 import { getContext, loadSound } from './engine';
 
@@ -50,14 +51,13 @@ export function setOnTrigger(cb: ((padKey: string) => void) | null): void {
   onTrigger = cb;
 }
 
-// 마스터 버스: voice → masterGain → dry ────────┐
-//                            └→ reverb → wet ────┴→ limiter → destination
-// 컨텍스트당 한 번만 만든다. busCtx로 어떤 컨텍스트에 묶였는지 추적(녹음 후 컨텍스트가
-// 교체되면 재구성).
+// 마스터 버스: 모든 보이스(원음·메아리) → masterGain → limiter → destination (단일 직렬).
+// ★audio-api 0.11.0은 한 노드를 두 번 연결해 같은 목적지에서 다시 만나는 '다이아몬드' 그래프를
+// 렌더하지 못한다(마지막 연결만 남고 나머지는 무음). 그래서 dry/wet을 노드로 분기하지 않고,
+// 잔향(메아리)도 원음처럼 '독립 보이스'로 만들어 masterGain에 합류시킨다(샘플러 engine.ts와 동일 패턴).
+// 컨텍스트당 한 번만 만든다. busCtx로 어떤 컨텍스트에 묶였는지 추적(녹음 후 교체되면 재구성).
 let busCtx: AudioContext | null = null;
 let masterGain: GainNode | null = null;
-let dryGain: GainNode | null = null;
-let wetGain: GainNode | null = null;
 let limiter: WaveShaperNode | null = null; // 출력단 소프트 리미터(클리핑 방지)
 
 // soundId → 디코드된 버퍼. 스케줄은 동기 타이머에서 일어나 await할 수 없으므로, 미리
@@ -75,10 +75,6 @@ function bpmInterval(pct: number): number {
 function densityProb(pct: number): number {
   return 0.1 + 0.78 * (pct / 100); // 패드당 발화 확률 0.1..0.88
 }
-function spaceWet(pct: number): number {
-  return 0.9 * (pct / 100); // 리버브 wet 0..0.9
-}
-
 // tanh 소프트클립 커브 — 여러 보이스가 겹쳐 합산 신호가 ±1을 넘어도 찢어지지 않고 부드럽게
 // 압축한다(디지털 클리핑 방지). 입력이 [-1,1]을 벗어나면 WaveShaper가 끝값으로 클램프하므로
 // 자연스러운 리미팅이 된다.
@@ -92,61 +88,32 @@ function makeSoftClipCurve(): Float32Array {
   return curve;
 }
 
-// 멀티탭 딜레이(FIR) 리버브 — 피드백 콤은 이 빌드에서 자가발진해 렌더를 폭주시켰다(SPACE=0에도
-// 전체 무음, SPACE↑면 "틱틱"). 멀티탭은 피드백 루프가 없어 발진이 수학적으로 불가능하다.
-// 탭마다 딜레이+lowpass+지수감쇠로 공간 꼬리를 만든다. CPU는 탭 수에 비례(8개라 가볍다).
-const REVERB_TAPS = [0.013, 0.027, 0.041, 0.059, 0.079, 0.101, 0.127, 0.157]; // 탭 지연(초)
-const REVERB_DECAY = 0.72; // 탭별 지수 감쇠(뒤 탭일수록 작게)
-const REVERB_DAMP_HZ = 2600; // 탭 고역 감쇠 → 어두운 꼬리
-const REVERB_SEND = 0.5; // 리버브 입력 게인
-const REVERB_NORM = 0.6; // 탭 합 정규화(피드백 없어 게인 여유 큼)
+// 메아리(탭) 리버브 — buildReverb/convolver 같은 마스터 버스 이펙트는 전부 '다이아몬드'라
+// 0.11.0에서 렌더가 깨졌다(위 마스터 버스 주석 참고). 대신 발화마다 원음 버퍼를 조금씩 늦게
+// 재생하는 독립 보이스(메아리)를 SPACE 단계 수만큼 띄워 잔향을 만든다(delay 노드도 불필요).
+const REVERB_TAP_DELAYS = [0.07, 0.13, 0.19]; // 메아리 i의 지연(초). 앞에서부터 사용.
+const REVERB_TAP_DECAY = 0.6; // 메아리 게인 감쇠(0.6^(i+1) — 뒤 메아리일수록 작게)
+const REVERB_DAMP_HZ = 2600; // 메아리 lowpass — 어두운 꼬리
+const REVERB_WET = 0.7; // 메아리 전체 레벨(원음 대비)
 
-// input(masterGain) → [병렬 콤 필터] → output(wetGain). 컨텍스트당 한 번만 구성.
-function buildReverb(c: AudioContext, input: GainNode, output: GainNode): void {
-  const send = c.createGain();
-  send.gain.value = REVERB_SEND;
-  const sum = c.createGain();
-  sum.gain.value = REVERB_NORM;
-  input.connect(send);
-  REVERB_TAPS.forEach((t, i) => {
-    const delay = c.createDelay(1);
-    delay.delayTime.value = t;
-    const damp = c.createBiquadFilter();
-    damp.type = 'lowpass';
-    damp.frequency.value = REVERB_DAMP_HZ;
-    const g = c.createGain();
-    g.gain.value = Math.pow(REVERB_DECAY, i + 1);
-    // send → delay → damp → g → sum (피드백 없음 = 발진 불가)
-    send.connect(delay);
-    delay.connect(damp);
-    damp.connect(g);
-    g.connect(sum);
-  });
-  sum.connect(output);
+// SPACE 단어 인덱스(DRY=0, ROOM=1, HALL=2, CATHEDRAL=3)를 그대로 메아리 개수로 쓴다.
+// DRY는 0개라 잔향 없이 원음만 — 보이스 복제도 없어 가장 가볍다.
+function spaceTaps(pct: number): number {
+  const idx = Math.min(SPACE_WORDS.length - 1, Math.floor((pct / 100) * SPACE_WORDS.length));
+  return Math.min(idx, REVERB_TAP_DELAYS.length);
 }
 
 function buildBus(c: AudioContext): void {
   masterGain = c.createGain();
-  dryGain = c.createGain();
-  wetGain = c.createGain();
   masterGain.gain.value = 0.8; // 리미터 앞 헤드룸
-  dryGain.gain.value = 1;
-  wetGain.gain.value = 0;
 
   limiter = c.createWaveShaper();
   limiter.curve = makeSoftClipCurve();
   limiter.oversample = 'none'; // 가벼운 tanh 클립이라 오버샘플 불필요(CPU 절약)
 
-  // voice → masterGain → dry ───────────┐
-  //                    └→ reverb → wet ──┴→ limiter → destination
-  masterGain.connect(dryGain);
-  dryGain.connect(limiter);
-  wetGain.connect(limiter);
+  // 모든 보이스(원음·메아리) → masterGain → limiter → destination. 단일 직렬이라 다이아몬드 없음.
+  masterGain.connect(limiter);
   limiter.connect(c.destination);
-  // SPACE 리버브 비활성 — audio-api 0.11.0에서 리버브 노드(delay/biquad)를 그래프에 추가하면
-  // 발진이 아니라 렌더 자체가 깨진다(피드백 없는 멀티탭도 동일, 빼면 정상). 버전 고정(0.12.x
-  // 빌드 실패)이라 라이브러리 레벨 우회가 막혀, 리버브는 별도 과제로 두고 비활성한다.
-  // buildReverb(c, masterGain, wetGain);
 
   busCtx = c;
 }
@@ -172,16 +139,16 @@ async function prime(p: TransportParams): Promise<void> {
   await Promise.all(jobs);
 }
 
-// 라이브 파라미터 갱신(슬라이더가 재생 중 움직여도 반영). wet은 즉시, 나머지는 다음 틱에 반영.
+// 라이브 파라미터 갱신(슬라이더가 재생 중 움직여도 반영). 모두 다음 틱부터 반영된다.
 export function setParams(p: TransportParams): void {
   params = p;
   void prime(p);
-  if (wetGain) wetGain.gain.value = spaceWet(p.preset.space.pct);
 }
 
 // 한 틱(time t)에 DENSITY 확률로 패드들을 골라 발화. 공간감=랜덤 팬 + 약간의 타이밍 흔들림.
 function scheduleTick(t: number): void {
   if (!params || !masterGain) return;
+  const mg = masterGain; // 클로저(playVoice)에서 non-null로 캡처
   const c = getContext();
   // 이 틱 시각이 이미 지났으면(엔진 시작 직후 currentTime 점프 등) 통째로 건너뛴다. 밀린
   // 틱을 현재에 몰아 동시 발화시키면 배속·클리핑이 생긴다(lookahead는 미래만 예약한다).
@@ -205,23 +172,46 @@ function scheduleTick(t: number): void {
       sound.source === 'userRecorded' && sound.clipSec != null ? sound.clipSec : buf.duration;
     lastEnd.set(pad.key, when + playLen);
 
-    const src = c.createBufferSource();
-    src.buffer = buf;
-    const g = c.createGain();
     const vol = (pad.volume * master) / 10000; // (0..100)·(0..100)/10000 = 0..1
-    g.gain.value = Math.max(0, Math.min(1, vol)) * (0.7 + Math.random() * 0.3); // 0.7..1.0배 흔들림
-    const pan = c.createStereoPanner();
-    pan.pan.value = (Math.random() * 2 - 1) * 0.7;
+    const baseVol = Math.max(0, Math.min(1, vol));
+    const taps = spaceTaps(preset.space.pct);
 
-    src.connect(g);
-    g.connect(pan);
-    pan.connect(masterGain);
+    // 원음 1 + 메아리 taps개를 각각 '독립 보이스'로 띄운다. 보이스 하나 = src→gain→(lowpass)→pan
+    // →masterGain 한 줄이라 분기/재합류(다이아몬드)가 없다. 메아리는 같은 버퍼를 조금 늦게(start
+    // 시각만 지연) 재생하므로 delay 노드도 필요 없다 — 점점 늦고·작고·어둡고·넓게 퍼진다.
+    const playVoice = (gainValue: number, panSpread: number, at: number, lowpass: boolean) => {
+      const src = c.createBufferSource();
+      src.buffer = buf;
+      const g = c.createGain();
+      g.gain.value = gainValue;
+      const pan = c.createStereoPanner();
+      pan.pan.value = (Math.random() * 2 - 1) * panSpread;
+      src.connect(g);
+      let tail: AudioNode = g;
+      if (lowpass) {
+        const damp = c.createBiquadFilter();
+        damp.type = 'lowpass';
+        damp.frequency.value = REVERB_DAMP_HZ;
+        g.connect(damp);
+        tail = damp;
+      }
+      tail.connect(pan);
+      pan.connect(mg);
+      if (sound.source === 'userRecorded' && sound.uri) {
+        src.start(at, sound.offsetSec ?? 0, sound.clipSec);
+      } else {
+        src.start(at);
+      }
+    };
 
-    if (sound.source === 'userRecorded' && sound.uri) {
-      src.start(when, sound.offsetSec ?? 0, sound.clipSec);
-    } else {
-      src.start(when);
+    // 원음(dry): 0.7..1.0배 게인 흔들림, lowpass 없음
+    playVoice(baseVol * (0.7 + Math.random() * 0.3), 0.7, when, false);
+    // 메아리(wet 탭): 늦게·작게(decay)·어둡게(lowpass)·넓게(pan)
+    for (let i = 0; i < taps; i++) {
+      const echoGain = baseVol * REVERB_WET * Math.pow(REVERB_TAP_DECAY, i + 1);
+      playVoice(echoGain, 0.9, when + REVERB_TAP_DELAYS[i], true);
     }
+
     // 실제로 울리는 시점(when)에 맞춰 도트 glow를 깨운다(lookahead만큼 지연). 정지/언마운트 후
     // onTrigger가 null이면 no-op.
     if (onTrigger) {
@@ -257,7 +247,6 @@ export async function start(): Promise<void> {
       ready.clear();
       buildBus(c);
     }
-    if (wetGain) wetGain.gain.value = spaceWet(params.preset.space.pct);
     await prime(params); // 재생 전 버퍼 디코드를 끝낸다(재생 중 디코드 글리치 방지)
     if (!playing) return; // await 동안 stop됐으면 중단
     const startAt = c.currentTime;
