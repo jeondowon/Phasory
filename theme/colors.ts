@@ -52,7 +52,6 @@ export const colors = {
   hairlineBtn: 'rgba(0,0,0,0.14)',
   keychip: 'rgba(0,0,0,0.15)',
   track: 'rgba(0,0,0,0.08)',
-  bankInactive: 'rgba(0,0,0,0.18)',
   tabDivider: 'rgba(0,0,0,0.06)',
   ring: 'rgba(0,0,0,0.06)', // orbit static rings
 

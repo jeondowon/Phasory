@@ -20,7 +20,7 @@ export type Sound = {
 };
 
 export type Pad = {
-  key: string; // '1'..'8' (패드 식별자 = 표시 번호)
+  key: string; // '1'..'8' (뱅크 내 위치). 화면 표시 번호 = bankIndex*8 + key
   soundId: string | null; // null = 빈 패드
   volume: number; // 0..100
 };

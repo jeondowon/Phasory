@@ -1,5 +1,5 @@
 // Screen 04 — Sound Map. 위치가 기록된 사운드를 실제 지도(MapLibre) 위에 핀으로 표시
-// (클러스터링 없음, PHASE-SPEC §6). 라이트 톤(OpenFreeMap positron) 위에 PHASE 색 핀.
+// (클러스터링 없음, PHASE-SPEC §6). positron 라이트 톤 기본 지도 위에 PHASE 주황 핀·현위치 점.
 // 진입 시 현재 위치를 기준으로 카메라를 잡고(UserLocation 점도 표시), 핀 탭 → 소리 상세.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { View, StyleSheet, Image, TouchableOpacity } from 'react-native';
@@ -11,17 +11,19 @@ import {
   Camera,
   Marker,
   UserLocation,
+  Layer,
   type CameraRef,
   type InitialViewState,
   type LngLatBounds,
 } from '@maplibre/maplibre-react-native';
 import { AppText } from '@/components/AppText';
+import { HeaderGear } from '@/components/HeaderGear';
 import { getCurrentCoords } from '@/lib/geo';
 import { useStore } from '@/store';
 import type { Sound } from '@/store/types';
 import { colors } from '@/theme/colors';
 
-// 키 불필요한 무료 벡터 타일 + 라이트 스타일(positron). PHASE 톤(#FAFAF8 계열)과 잘 맞는다.
+// 키 불필요한 무료 라이트 스타일(positron). PHASE 톤(#FAFAF8 계열)과 잘 맞는다.
 const MAP_STYLE = 'https://tiles.openfreemap.org/styles/positron';
 const DEFAULT_CENTER: [number, number] = [126.978, 37.5665]; // 위치도 핀도 없을 때 기본(서울)
 const ENTRY_ZOOM = 9; // 진입/기본 카메라 — 광역. 소리가 멀리 흩어져 있어도 한눈에 개괄한다.
@@ -143,60 +145,85 @@ export default function MapScreen() {
 
   return (
     <View style={styles.root}>
-      {ready && (
-        <Map style={StyleSheet.absoluteFill} mapStyle={MAP_STYLE} logo={false} compass={false}>
-          <Camera ref={cameraRef} initialViewState={initial} />
-          <UserLocation animated />
-          {located.map((s) => (
-            <Marker
-              key={s.id}
-              id={s.id}
-              lngLat={[s.location!.lng, s.location!.lat]}
-              anchor="bottom"
-              onPress={() => openSound(s)}
-            >
-              <PinVisual sound={s} />
-            </Marker>
-          ))}
-        </Map>
-      )}
-
-      {/* chrome */}
+      {/* 고정 헤더 — 샘플러처럼 상단에 줄로 고정. 지도 콘텐츠는 이 아래부터 시작한다. */}
       <SafeAreaView edges={['top']}>
         <View style={styles.header}>
-          <AppText style={styles.title}>SOUND MAP</AppText>
-          <AppText style={styles.count}>{located.length} SOUNDS</AppText>
+          <AppText style={styles.title}>MAP</AppText>
+          <View style={styles.headerRight}>
+            <AppText style={styles.count}>{located.length} SOUNDS</AppText>
+            <HeaderGear />
+          </View>
         </View>
       </SafeAreaView>
 
-      {/* empty state */}
-      {ready && located.length === 0 && (
-        <View style={styles.empty} pointerEvents="none">
-          <AppText style={styles.emptyText}>녹음한 소리에 위치를 더하면 여기에 표시됩니다</AppText>
-        </View>
-      )}
+      {/* 지도 영역 — 헤더 아래 남은 공간만 채운다(화면 전체를 덮지 않음). */}
+      <View style={styles.mapWrap}>
+        {ready && (
+          <Map style={StyleSheet.absoluteFill} mapStyle={MAP_STYLE} logo={false} compass={false} attribution={false}>
+            <Camera ref={cameraRef} initialViewState={initial} />
+            {/* 현재 위치 점 — 기본 puck(파란 점)을 PHASE 주황으로 교체(흰 테두리로 지도 위 가독성). */}
+            <UserLocation animated>
+              <Layer
+                id="user-location-dot"
+                type="circle"
+                source="mlrn-user-location"
+                paint={{
+                  'circle-radius': 7,
+                  'circle-color': colors.accent,
+                  'circle-stroke-width': 3,
+                  'circle-stroke-color': colors.screenBg,
+                  'circle-pitch-alignment': 'map',
+                }}
+              />
+            </UserLocation>
+            {located.map((s) => (
+              <Marker
+                key={s.id}
+                id={s.id}
+                lngLat={[s.location!.lng, s.location!.lat]}
+                anchor="bottom"
+                onPress={() => openSound(s)}
+              >
+                <PinVisual sound={s} />
+              </Marker>
+            ))}
+          </Map>
+        )}
 
-      {/* 현재 위치로 이동 */}
-      {ready && (
-        <TouchableOpacity style={styles.locateBtn} onPress={recenter} activeOpacity={0.85}>
-          <Crosshair color={colors.slate} />
-        </TouchableOpacity>
-      )}
+        {/* empty state */}
+        {ready && located.length === 0 && (
+          <View style={styles.empty} pointerEvents="none">
+            <AppText style={styles.emptyText}>녹음한 소리에 위치를 더하면 여기에 표시됩니다</AppText>
+          </View>
+        )}
+
+        {/* 현재 위치로 이동 */}
+        {ready && (
+          <TouchableOpacity style={styles.locateBtn} onPress={recenter} activeOpacity={0.85}>
+            <Crosshair color={colors.slate} />
+          </TouchableOpacity>
+        )}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.mapLand },
+  root: { flex: 1, backgroundColor: colors.screenBg },
+  // 고정 헤더 줄 — 샘플러/앰비언트와 같은 톤(좌: 화면명, 우: 개수). 지도는 이 아래에서 시작.
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 24,
-    paddingTop: 18,
+    paddingTop: 8,
+    paddingBottom: 8,
   },
   title: { fontSize: 13, letterSpacing: 3, color: colors.text },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   count: { fontSize: 10, letterSpacing: 2, color: colors.textMuted },
+  // 지도 영역 — 헤더 아래의 남은 공간. 로딩 중(ready 전)에도 빈 화면이 아니라 land 톤이 보이게.
+  mapWrap: { flex: 1, backgroundColor: colors.mapLand, overflow: 'hidden' },
   // empty
   empty: { position: 'absolute', left: 40, right: 40, top: '46%', alignItems: 'center' },
   emptyText: { fontSize: 12, lineHeight: 20, color: colors.textFaint, textAlign: 'center' },
@@ -218,7 +245,7 @@ const styles = StyleSheet.create({
   pin: { alignItems: 'center' },
   pinCircle: {
     borderWidth: 2,
-    borderColor: colors.slate,
+    borderColor: colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.pinWaveBg,
@@ -238,7 +265,7 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4,
     borderRightWidth: 4,
     borderTopWidth: 5,
-    borderTopColor: colors.slate,
+    borderTopColor: colors.accent,
     borderLeftColor: 'transparent',
     borderRightColor: 'transparent',
   },

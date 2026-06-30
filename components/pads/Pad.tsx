@@ -115,12 +115,12 @@ export function ActivePad({
     p.value = withRepeat(withTiming(1, { duration: 1700, easing: Easing.inOut(Easing.ease) }), -1, true);
   }, []);
   const pulse = useAnimatedStyle(() => ({
-    shadowRadius: 16 + 14 * p.value,
+    shadowRadius: 10 + 6 * p.value,
     shadowOpacity: 0.14 + 0.16 * p.value,
   }));
 
   return (
-    <AnimatedPressable onPress={onPress} style={[styles.pad, styles.padActive, glow(16, 0.14), pulse]}>
+    <AnimatedPressable onPress={onPress} style={[styles.pad, styles.padActive, glow(10, 0.14), pulse]}>
       <View style={styles.headerRow}>
         <KeyChip letter={letter} active />
         <Kebab active onPress={onMenu} />

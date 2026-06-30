@@ -23,13 +23,16 @@ export function CustomTabBar({ state, navigation }: Props) {
         {state.routes.map((route, i) => {
           const focused = state.index === i;
           const label = LABELS[route.name] ?? route.name.toUpperCase();
+          // Equal-width tabs so the middle label sits at the true screen center;
+          // align text to the bar edges (left / center / right).
+          const textAlign = i === 0 ? 'left' : i === state.routes.length - 1 ? 'right' : 'center';
           const onPress = () => {
             const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
             if (!focused && !event.defaultPrevented) navigation.navigate(route.name);
           };
           return (
-            <TouchableOpacity key={route.key} onPress={onPress} hitSlop={10}>
-              <AppText style={[styles.label, { color: focused ? colors.text : colors.textFainter }]}>
+            <TouchableOpacity key={route.key} onPress={onPress} hitSlop={10} style={styles.tab}>
+              <AppText style={[styles.label, { textAlign, color: focused ? colors.text : colors.textFainter }]}>
                 {label}
               </AppText>
             </TouchableOpacity>
@@ -44,12 +47,12 @@ const styles = StyleSheet.create({
   safe: { backgroundColor: colors.screenBg },
   bar: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     paddingHorizontal: 24,
     paddingTop: 16,
     paddingBottom: 8,
     borderTopWidth: 1,
     borderTopColor: colors.tabDivider,
   },
+  tab: { flex: 1 },
   label: { fontSize: 10, letterSpacing: 1.5 },
 });

@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { View, StyleSheet, TouchableOpacity } from 'react-native';
 import { Screen } from '@/components/Screen';
 import { AppText } from '@/components/AppText';
+import { HeaderGear } from '@/components/HeaderGear';
 import { Slider } from '@/components/Slider';
 import { PhaseOrbit } from '@/components/PhaseOrbit';
 import { useStore } from '@/store';
@@ -22,9 +23,11 @@ const LEVER_LABELS: { key: keyof GenerativePreset; label: string }[] = [
 export default function AmbientScreen() {
   const preset = useStore((s) => s.preset);
   const setLever = useStore((s) => s.setLever);
-  const pads = useStore((s) => s.pads);
+  // 현재 보이는 섹션의 패드를 따라간다(샘플러에서 스와이프한 섹션).
+  const pads = useStore((s) => s.banks[Math.min(s.bankIndex, s.banks.length - 1)]);
   const sounds = useStore((s) => s.sounds);
   const master = useStore((s) => s.master);
+  const setMaster = useStore((s) => s.setMaster);
   const [playing, setPlaying] = useState(false);
 
   // 스토어(패드/사운드/마스터/레버)가 바뀔 때마다 트랜스포트에 라이브 반영. 재생 중 슬라이더
@@ -51,7 +54,10 @@ export default function AmbientScreen() {
       {/* Header */}
       <View style={styles.header}>
         <AppText style={styles.title}>AMBIENT</AppText>
-        <AppText style={styles.sub}>DRIFTING · IN PHASE</AppText>
+        <View style={styles.headerRight}>
+          <AppText style={styles.sub}>DRIFTING · IN PHASE</AppText>
+          <HeaderGear />
+        </View>
       </View>
 
       {/* Orbit */}
@@ -59,8 +65,20 @@ export default function AmbientScreen() {
         <PhaseOrbit playing={playing} tempoPct={preset.tempo.pct} pads={pads} />
       </View>
 
-      {/* 4 levers */}
+      {/* 4 levers (+ ambient master at top) */}
       <View style={styles.levers}>
+        <View style={styles.leverRow}>
+          <AppText style={styles.leverLabel}>MASTER</AppText>
+          <Slider
+            pct={master}
+            fillColor={colors.slate}
+            knobColor={colors.bone}
+            knobSize={12}
+            style={styles.leverSlider}
+            onChange={setMaster}
+          />
+          <AppText style={styles.leverValue} numberOfLines={1}>{master}</AppText>
+        </View>
         {LEVER_LABELS.map(({ key, label }) => (
           <View key={key} style={styles.leverRow}>
             <AppText style={styles.leverLabel}>{label}</AppText>
@@ -105,9 +123,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 24,
-    paddingTop: 18,
+    paddingTop: 8,
   },
   title: { fontSize: 13, letterSpacing: 3, color: colors.text },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   sub: { fontSize: 10, letterSpacing: 2, color: colors.textFaint },
   orbit: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   levers: { paddingHorizontal: 26, paddingTop: 8, gap: 18 },

@@ -1,7 +1,7 @@
 // 오디오 엔진 — UI와 분리(claude.md 폴더 규약). AudioContext 싱글톤 + 사운드 버퍼
 // 디코드 캐시 + playPad. 사운드는 신스 합성이 아니라 파일 재생(AppPlan §5.7):
 // require()한 wav 에셋의 metro 모듈 id(number)를 decodeAudioData가 그대로 받는다.
-import { AudioContext, type AudioBuffer } from 'react-native-audio-api';
+import { AudioContext, type AudioBuffer, type AudioBufferSourceNode } from 'react-native-audio-api';
 import { Paths } from 'expo-file-system';
 import type { Sound } from '../store/types';
 import { ensureAudioSession } from './session';
@@ -79,29 +79,46 @@ export async function loadSound(sound: Sound): Promise<AudioBuffer | null> {
   return load(sound.id);
 }
 
+// 재생 중인 소스 노드 강한 참조. RN 브리지에서 onEnded는 src(JS 래퍼)에 매달린 구독으로
+// 전달되는데, src를 참조 없이 두면 'ended' 도달 전에 GC되어(빠르게 여러 번 누르면 재현)
+// 콜백이 누락된다 → UI의 PLAYING이 안 풀림. 끝날 때까지 잡아 두고 onEnded에서 풀어 준다.
+const activeSources = new Set<AudioBufferSourceNode>();
+
+function trackSource(src: AudioBufferSourceNode, onEnded: () => void): void {
+  activeSources.add(src);
+  src.onEnded = () => {
+    activeSources.delete(src);
+    onEnded();
+  };
+}
+
 // 패드 탭 → 일회성 재생. volume 0..100 → gain 0..1 (0이면 무음).
-export async function playPad(soundId: string, volume: number): Promise<void> {
+export async function playPad(soundId: string, volume: number, onEnded?: () => void): Promise<void> {
   await ensureAudioSession();
   const c = context();
   if (c.state === 'suspended') await c.resume();
   const buf = await load(soundId);
-  if (!buf) return;
+  if (!buf) {
+    onEnded?.(); // 재생 불가 → PLAYING이 남지 않게 즉시 종료 통지
+    return;
+  }
   const src = c.createBufferSource();
   src.buffer = buf;
   const gain = c.createGain();
   gain.gain.value = Math.max(0, Math.min(1, volume / 100));
   src.connect(gain);
   gain.connect(c.destination);
+  if (onEnded) trackSource(src, onEnded); // 버퍼 끝까지 재생되면 호출 → UI에서 PLAYING 해제
   src.start(c.currentTime);
 }
 
 // 패드 탭 → Sound 하나를 일회성 재생. builtin은 에셋(playPad), userRecorded는
 // 녹음 파일 uri의 트림 구간(offset~clip)만 재생. volume 0..100.
-export async function playSound(sound: Sound, volume: number): Promise<void> {
+export async function playSound(sound: Sound, volume: number, onEnded?: () => void): Promise<void> {
   if (sound.source === 'userRecorded' && sound.uri) {
-    return playUri(sound.uri, volume, sound.offsetSec ?? 0, sound.clipSec);
+    return playUri(sound.uri, volume, sound.offsetSec ?? 0, sound.clipSec, onEnded);
   }
-  return playPad(sound.id, volume);
+  return playPad(sound.id, volume, onEnded);
 }
 
 // 첫 탭 지연을 줄이기 위해 빌트인 사운드를 미리 디코드(선택).
@@ -115,7 +132,8 @@ export async function playUri(
   uri: string,
   volume = 100,
   offsetSec = 0,
-  durationSec?: number
+  durationSec?: number,
+  onEnded?: () => void
 ): Promise<void> {
   await ensureAudioSession();
   const c = context();
@@ -132,6 +150,7 @@ export async function playUri(
   gain.gain.value = Math.max(0, Math.min(1, volume / 100));
   src.connect(gain);
   gain.connect(c.destination);
+  if (onEnded) trackSource(src, onEnded); // 트림 구간 끝까지 재생되면 호출 → UI에서 PLAYING 해제
   // when은 컨텍스트 절대 시각. currentTime은 계속 흐르므로 0을 주면 두 번째 재생부터
   // 과거 시각 예약이라 무음이 된다. 항상 currentTime(=지금)을 기준으로 예약한다.
   if (durationSec != null) src.start(c.currentTime, offsetSec, durationSec);
